@@ -78,113 +78,125 @@ void set_cache_param(param, value)
 /************************************************************/
 
 /************************************************************/
-void init_cache()
+
+cache init_cache_a_cache(cache c, int size)
 {
-  icache = &c1;
-  // Inicializando icache.
-  icache -> size = cache_usize;
-  icache -> associativity = cache_assoc;
-  icache -> n_sets        = cache_usize / (cache_assoc * cache_block_size);
-  bitSet = LOG2(icache -> n_sets);
+  Pcache cache_init;
+  cache_init = &c;
+  // Inicializando cache_init.
+  cache_init -> size = size;
+  cache_init -> associativity = cache_assoc;
+  cache_init -> n_sets        = size / (cache_assoc * cache_block_size);
+  bitSet = LOG2(cache_init -> n_sets);
   bitOffset = LOG2(cache_block_size);
   tagMask = MASK_ORIG << (bitOffset + bitSet);
-  icache -> index_mask_offset = bitOffset;
+  cache_init -> index_mask_offset = bitOffset;
   //mascara que ayuda a obtener el indice de un numero
   int mask_auxiliar = (1<<bitSet)-1;
 
-  icache -> index_mask    = mask_auxiliar << bitOffset;
+  cache_init -> index_mask    = mask_auxiliar << bitOffset;
 
 
-  icache -> LRU_head      = (Pcache_line*)malloc(sizeof(Pcache_line) * icache -> n_sets);
-  icache -> LRU_tail      = (Pcache_line*)malloc(sizeof(Pcache_line) * icache -> n_sets);
-  // icache -> set_contents  = (int*)malloc(sizeof(int) * icache -> n_sets);
-  // icache -> contents      = 0;
-  for(int i=0; i<icache->n_sets; i++){
+  cache_init -> LRU_head      = (Pcache_line*)malloc(sizeof(Pcache_line) * cache_init -> n_sets);
+  cache_init -> LRU_tail      = (Pcache_line*)malloc(sizeof(Pcache_line) * cache_init -> n_sets);
+
+  for(int i=0; i<cache_init->n_sets; i++){
     //Inicialimos las lineas cabeza de cada set
-    icache -> LRU_head[i] = malloc(sizeof(cache_line));
-    icache -> LRU_head[i] -> tag = -1;
-    icache -> LRU_head[i] -> dirty = -1;
-
-    icache -> LRU_tail[i] = malloc(sizeof(cache_line));
-    icache -> LRU_tail[i] -> tag = -1;
-    icache -> LRU_tail[i] -> dirty = -1;
+    cache_init -> LRU_head[i] = malloc(sizeof(cache_line));
+    cache_init -> LRU_head[i] -> tag = -1;
+    cache_init -> LRU_head[i] -> dirty = -1;
+    Pcache_line temp = cache_init -> LRU_head[i];
+    for(int j = cache_assoc; j > 1 ; j--){
+      temp -> LRU_next = malloc(sizeof(cache_line));
+      temp -> LRU_next -> tag = -1;
+      temp -> LRU_next -> dirty = -1;
+      temp = temp -> LRU_next;
+    }
+    cache_init -> LRU_tail[i] = temp;
 
   }
+  return(c);
 
-  printf("Init cache: done.\n");
+}
+
+void init_cache(){
+  if(!cache_split){
+    c1 = init_cache_a_cache(c1, cache_usize);
+  } else {
+    c1 = init_cache_a_cache(c1, cache_isize);
+    c2 = init_cache_a_cache(c2, cache_dsize);
+  }
 }
 
 /************************************************************/
 
 /************************************************************/
-void perform_access_set_assoc(addr, access_type)
-  unsigned addr, access_type;
+void perform_access_set_assoc(cache c, unsigned addr, unsigned access_type)
 {
   // Dirección y tag
   int index;
   unsigned int tag;
-  index = (addr & icache->index_mask) >> icache->index_mask_offset;
+  Pcache cache_aux;
+  cache_aux = &c;
+  index = (addr & c.index_mask) >> c.index_mask_offset;
   tag = addr & tagMask;
-
-
-  // Buscar el tag dentro de el set.
   // Inicializa la busqueda del tag.
   int found = 0;
   int count_assoc = 1;
-  Pcache_line temp = icache -> LRU_head[index];
-  // printf("Inicia busqueda \n");
-  while(found == 0 && count_assoc <= (icache -> associativity)){
+  int help = 1;
+  // Apuntador que ayuda a avanzar líneas dentro del set.
+  Pcache_line temp = cache_aux -> LRU_head[index];
+  // Buscar el tag dentro de el set.
+  while(!found && (count_assoc <= (cache_aux -> associativity)) && help){
     if((temp -> tag) == tag){
         found = 1;
     } // Mientras no sea el último y que el siguiente no sea nulo.
-    else if(count_assoc <= (icache -> associativity) && (temp -> LRU_next)){
-      temp = temp -> LRU_next; // Seguimos con el siguiente en el set
+    else if(count_assoc  < (cache_aux -> associativity) && temp -> LRU_next){
+      temp = temp -> LRU_next; // Seguimos con la siguiente línea en el set.
+      count_assoc++;           // Contador del número de líneas en el set.
     }
-    count_assoc++; // Contador del número de líneas en el set.
+    // Condición para no llegar hasta el último en el set
+    // si es que no tienen nada.
+    else {
+      help = 0;
+    }
   }
-  printf("%d-%d,%d,%d,%d \n", index, tag, access_type, found, tag);
-  // printf("Termina busqueda \n");
-
   Pcache_line item = malloc(sizeof(cache_line));
-  int dirty;
-
   switch (access_type) {
+/******************************************************************************/
+/*--------------------------Load Data-----------------------------------------*/
+/******************************************************************************/
     case TRACE_DATA_LOAD:
     cache_stat_data.accesses++;
       if(!found){
         cache_stat_data.misses++;
-        // Si la linea no está vacía.
-        if(temp -> tag != -1){
+        // Si el bloque no está vacío.
+        if((count_assoc) == (cache_aux -> associativity) && temp -> tag != -1){
           cache_stat_data.replacements++;
-          dirty = temp -> dirty;
-          delete(
-            &(icache -> LRU_head[index]), // Head
-            &(icache -> LRU_tail[index]), // Tail
-            icache -> LRU_tail[index]
-          );
-          if(dirty == 1){
+          if(temp -> dirty){
             // Escribimos en memoria principal su contenido.
             cache_stat_data.copies_back += words_per_block;
           }
         }
-
         // Leer de memoria principal el dato.
         cache_stat_data.demand_fetches += words_per_block;
         item -> tag = tag;
         item -> dirty = 0;
         insert(
-          &(icache -> LRU_head[index]),
-          &(icache -> LRU_tail[index]),
+          &(cache_aux -> LRU_head[index]),
+          &(cache_aux -> LRU_tail[index]),
           item);
       } else {
           delete(
-            &(icache -> LRU_head[index]), // Head
-            &(icache -> LRU_tail[index]), // Tail
-            temp);                     // Bloque a insertar
+            &(cache_aux -> LRU_head[index]), // Head
+            &(cache_aux -> LRU_tail[index]), // Tail
+            temp
+          );                     // Bloque a insertar
           insert(
-            &(icache -> LRU_head[index]), // Head
-            &(icache -> LRU_tail[index]), // Tail
-            temp);                     // Bloque a insertar
+            &(cache_aux -> LRU_head[index]), // Head
+            &(cache_aux -> LRU_tail[index]), // Tail
+            temp
+          );                     // Bloque a insertar
       }
      break;
 /******************************************************************************/
@@ -197,47 +209,40 @@ void perform_access_set_assoc(addr, access_type)
        // Aumenta estadística de misses
        cache_stat_data.misses++;
        // Si la dirección es distinta y no vacía.
-       if(temp -> tag != -1){
+       if((count_assoc) == (cache_aux -> associativity) && temp -> tag != -1){
          cache_stat_data.replacements++;
-         dirty = icache -> LRU_tail[index] -> dirty;
-         delete(
-           &(icache -> LRU_head[index]),
-           &(icache -> LRU_tail[index]),
-           icache -> LRU_tail[index]
-         );
-         if(dirty == 1){
+         if(temp -> dirty){
            // Escribimos en memoria principal su contenido.
            cache_stat_data.copies_back += words_per_block;
          }
        }
-
        // Leer de memoria principal el dato.
        cache_stat_data.demand_fetches += words_per_block;
        item -> tag = tag;
        item -> dirty = 1;
        insert(
-        &icache -> LRU_head[index],
-        &icache -> LRU_tail[index],
+        &cache_aux -> LRU_head[index],
+        &cache_aux -> LRU_tail[index],
         item
        );
      } // Sí encontró el bloque.
      else {
         delete(
-          &(icache -> LRU_head[index]), // Head
-          &(icache -> LRU_tail[index]), // Tail
-          temp                          // Bloque a borrar
+          &(cache_aux -> LRU_head[index]), // Head
+          &(cache_aux -> LRU_tail[index]), // Tail
+          temp                             // Bloque a borrar
         );
         temp -> dirty = 1;
         insert(
-          &(icache -> LRU_head[index]), // Head
-          &(icache -> LRU_tail[index]), // Tail
-          temp                          // Bloque a insertar
+          &(cache_aux -> LRU_head[index]), // Head
+          &(cache_aux -> LRU_tail[index]), // Tail
+          temp                             // Bloque a insertar
         );
       }
       break;
-    /******************************************************************************/
-    /*----------------- Load Instructions-----------------------------------------*/
-    /******************************************************************************/
+/******************************************************************************/
+/*----------------- Load Instructions-----------------------------------------*/
+/******************************************************************************/
      case TRACE_INST_LOAD:
      cache_stat_inst.accesses++;
      // Si es un miss
@@ -245,19 +250,12 @@ void perform_access_set_assoc(addr, access_type)
         // Aumenta la estadística de misses.
         cache_stat_inst.misses++;
         // Si no está vacía la línea,
-        if(temp -> tag != -1){
+        if((count_assoc) == (cache_aux -> associativity) && temp -> tag != -1){
           // Aumenta reemplazos.
           cache_stat_inst.replacements++;
           // Conserva el dirty bit.
-          dirty = temp -> dirty;
-          // Borra la cola del set.
-          delete(
-            &(icache -> LRU_head[index]),
-            &(icache -> LRU_tail[index]),
-            icache -> LRU_tail[index]
-          );
           // Si dirty bit es 1
-          if(dirty == 1){
+          if(temp -> dirty){
             // Escribimos en memoria principal su contenido.
             cache_stat_inst.copies_back += words_per_block;
           }
@@ -269,147 +267,82 @@ void perform_access_set_assoc(addr, access_type)
         item -> dirty = 0;
         // Insertamos la instrucción en el cache.
         insert(
-          &(icache -> LRU_head[index]),
-          &(icache -> LRU_tail[index]),
+          &(cache_aux -> LRU_head[index]),
+          &(cache_aux -> LRU_tail[index]),
           item
         );
-      } // Si lo encontró.
+      } // Sí lo encontró.
       else {
           delete(
-            &(icache -> LRU_head[index]), // Head
-            &(icache -> LRU_tail[index]), // Tail
-            temp                          // Bloque a insertar
+            &(cache_aux -> LRU_head[index]), // Head
+            &(cache_aux -> LRU_tail[index]), // Tail
+            temp                             // Bloque a borrar
           );
           insert(
-            &(icache -> LRU_head[index]), // Head
-            &(icache -> LRU_tail[index]), // Tail
-            temp                          // Bloque a insertar
+            &(cache_aux -> LRU_head[index]), // Head
+            &(cache_aux -> LRU_tail[index]), // Tail
+            temp                             // Bloque a insertar
           );
       }
      break;
   }
 
-}
-
-/************************************************************/
-
-/************************************************************/
-void perform_access_direct_mapping(addr, access_type)
-  unsigned addr, access_type;
-{
-  int index;
-  index = (addr & icache->index_mask) >> icache->index_mask_offset;
-  unsigned int tag;
-  tag = addr & tagMask;
-
-  switch (access_type) {
-/******************************************************************************/
-/*--------------------------Load Data-----------------------------------------*/
-/******************************************************************************/
-    case TRACE_DATA_LOAD:
-    cache_stat_data.accesses++;
-    // Si es un miss
-     if(icache->LRU_head[index]->tag != tag){
-       cache_stat_data.misses++;
-       // Si la linea no está vacía.
-       if(icache -> LRU_head[index] -> tag != -1){
-       cache_stat_data.replacements++;
-     }
-       // Si dirty bit es 1
-       if(icache -> LRU_head[index] -> dirty == 1){
-         // Escribimos en memoria principal su contenido.
-         cache_stat_data.copies_back += words_per_block;
-       }
-       // Leer de memoria principal el dato.
-       cache_stat_data.demand_fetches += words_per_block;
-       icache -> LRU_head[index] -> tag = tag;
-       // Hacer la línea como no dirty.
-       icache -> LRU_head[index] -> dirty = 0;
-     }
-     break;
-/******************************************************************************/
-/*-------------------------Store Data-----------------------------------------*/
-/******************************************************************************/
-     case TRACE_DATA_STORE:
-      cache_stat_data.accesses++;
-      // Si es un miss.
-      if(icache->LRU_head[index]->tag != tag){
-        // Aumenta estadística de misses
-        cache_stat_data.misses++;
-        // Si la dirección es distinta y no vacía.
-        if(icache -> LRU_head[index] -> tag != -1){
-          cache_stat_data.replacements++;
-        }
-        // Si el dirty bit es 1.
-        if(icache -> LRU_head[index] -> dirty == 1){
-          // Escribimos en memoria principal su contenido.
-          cache_stat_data.copies_back += words_per_block;
-        }
-        // Leer de memoria principal el dato.
-        cache_stat_data.demand_fetches += words_per_block;
-      }
-      icache -> LRU_head[index] -> tag = tag;
-      // Hacer la línea como dirty.
-      icache -> LRU_head[index] -> dirty = 1;
-      break;
-/******************************************************************************/
-/*----------------- Load Instructions-----------------------------------------*/
-/******************************************************************************/
-     case TRACE_INST_LOAD:
-     cache_stat_inst.accesses++;
-     // Si es un miss
-      if(icache->LRU_head[index]->tag != tag){
-        cache_stat_inst.misses++;
-        if(icache -> LRU_head[index] -> tag != -1){
-        cache_stat_inst.replacements++;
-      }
-        // Si dirty bit es 1
-        if(icache -> LRU_head[index] -> dirty == 1){
-          // Escribimos en memoria principal su contenido.
-          cache_stat_inst.copies_back += words_per_block;
-        }
-        // Leer de memoria principal el dato.
-        cache_stat_inst.demand_fetches += words_per_block;
-        icache -> LRU_head[index]-> dirty = 0;
-      }
-      icache -> LRU_head[index] -> tag = tag;
-      break;
-    }
 }
 
 void perform_access(addr, access_type)
   unsigned addr, access_type;
   {
-    //printf("Init perform access\n");
-    if(cache_assoc > 1){
-      //printf("Init perform access.\n");
-      perform_access_set_assoc(addr, access_type);
-      //printf("End perform access\n");
-    } else{
-      //printf("Something is wrong\n");
-      perform_access_set_assoc(addr, access_type);
+    // Acceso unificado
+    if(!cache_split){
+      perform_access_set_assoc(c1, addr, access_type);
+
+    } else {
+      switch (access_type){
+        case TRACE_DATA_LOAD: case TRACE_DATA_STORE:
+        perform_access_set_assoc(c2, addr, access_type);
+        break;
+        case TRACE_INST_LOAD:
+        perform_access_set_assoc(c1, addr, access_type);
+        break;
+      }
+
     }
+
   }
 
-void flush()
-{
-
-  /* flush the cache */
-  for(int i=0; i<icache->n_sets; i++){
-
-    Pcache_line temp = icache -> LRU_head[i];
+int cp_flush(cache c){
+  int copies_back = 0;
+   Pcache cache_aux;
+   cache_aux = &c;
+  for(int i=0; i < cache_aux->n_sets; i++){
+    Pcache_line temp = cache_aux -> LRU_head[i];
     int count_assoc = 1;
-    while(count_assoc <= (icache -> associativity)){
-      if((temp -> dirty) == 1){
-          cache_stat_inst.copies_back += words_per_block;
-      } else if(count_assoc != (icache -> associativity) && (temp -> LRU_next)){
+    while(count_assoc <= (cache_aux -> associativity)){
+      if(temp -> dirty == 1){
+          copies_back += words_per_block;
+      }
+      if(temp -> LRU_next){
         temp = temp -> LRU_next;
       }
       count_assoc++;
     }
   }
+  return(copies_back);
+}
+
+void flush()
+{
+  int help;
+  if(!cache_split){
+    cache_stat_data.copies_back += cp_flush(c1);
+  }
+  else {
+    cache_stat_data.copies_back += cp_flush(c2);
+  }
 
 }
+
+
 /************************************************************/
 
 /************************************************************/
@@ -456,15 +389,15 @@ void dump_settings()
 {
   printf("*** CACHE SETTINGS ***\n");
   if (cache_split) {
-    printf("  Split I- D-cache\n");
+    printf("  Split I-D-cache\n");
     printf("  I-cache size: \t%d\n", cache_isize);
     printf("  D-cache size: \t%d\n", cache_dsize);
   } else {
-    printf("  Unified I- D-cache\n");
+    printf("  Unified I-D-cache\n");
     printf("  Size: \t%d\n", cache_usize);
   }
   printf("  Associativity: \t%d\n", cache_assoc);
-  printf("  Block size: \t%d\n", cache_block_size);
+  printf("  Block size: \t\t%d\n", cache_block_size);
   printf("  Write policy: \t%s\n",
 	 cache_writeback ? "WRITE BACK" : "WRITE THROUGH");
   printf("  Allocation policy: \t%s\n",
