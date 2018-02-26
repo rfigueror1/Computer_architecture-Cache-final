@@ -174,8 +174,8 @@ void perform_access_set_assoc(cache c, unsigned addr, unsigned access_type)
         if((count_assoc) == (cache_aux -> associativity) && temp -> tag != -1){
           cache_stat_data.replacements++;
           if(temp -> dirty){
-            // Escribimos en memoria principal su contenido.
-            cache_stat_data.copies_back += words_per_block;
+            // Escribimos en memoria principal su contenido
+              cache_stat_data.copies_back += words_per_block;
           }
         }
         // Leer de memoria principal el dato.
@@ -208,37 +208,58 @@ void perform_access_set_assoc(cache c, unsigned addr, unsigned access_type)
      if(!found){
        // Aumenta estadística de misses
        cache_stat_data.misses++;
-       // Si la dirección es distinta y no vacía.
-       if((count_assoc) == (cache_aux -> associativity) && temp -> tag != -1){
-         cache_stat_data.replacements++;
-         if(temp -> dirty){
-           // Escribimos en memoria principal su contenido.
-           cache_stat_data.copies_back += words_per_block;
-         }
+       //en politica no write allocation, se actualiza directamenten en memoria principal
+       if(!cache_writealloc){
+         cache_stat_data.copies_back++;
+         item -> dirty = 0;
        }
-       // Leer de memoria principal el dato.
-       cache_stat_data.demand_fetches += words_per_block;
-       item -> tag = tag;
-       item -> dirty = 1;
-       insert(
-        &cache_aux -> LRU_head[index],
-        &cache_aux -> LRU_tail[index],
-        item
-       );
-     } // Sí encontró el bloque.
-     else {
-        delete(
-          &(cache_aux -> LRU_head[index]), // Head
-          &(cache_aux -> LRU_tail[index]), // Tail
-          temp                             // Bloque a borrar
-        );
-        temp -> dirty = 1;
-        insert(
-          &(cache_aux -> LRU_head[index]), // Head
-          &(cache_aux -> LRU_tail[index]), // Tail
-          temp                             // Bloque a insertar
-        );
-      }
+        else{
+          if((count_assoc) == (cache_aux -> associativity) && temp -> tag != -1){
+            cache_stat_data.replacements++;
+            if(temp -> dirty && cache_writeback){
+              // Escribimos en memoria principal su contenido.
+              cache_stat_data.copies_back += words_per_block;
+              item -> dirty = 1;
+            }
+            else{
+              cache_stat_data.copies_back ++;
+              item -> dirty = 0;
+            }
+          }
+          // Leer de memoria principal el dato.
+          cache_stat_data.demand_fetches += words_per_block;
+          item -> tag = tag;
+          insert(
+           &cache_aux -> LRU_head[index],
+           &cache_aux -> LRU_tail[index],
+           item
+          );
+        }
+
+        }
+          // Sí encontró el bloque.
+
+       else{
+         delete(
+           &(cache_aux -> LRU_head[index]), // Head
+           &(cache_aux -> LRU_tail[index]), // Tail
+           temp                             // Bloque a borrar
+         );
+
+         insert(
+           &(cache_aux -> LRU_head[index]), // Head
+           &(cache_aux -> LRU_tail[index]), // Tail
+           temp                             // Bloque a insertar
+         );
+          if(cache_writeback){
+             temp -> dirty = 1;
+          }
+          else{
+              cache_stat_data.copies_back ++;
+              temp -> dirty = 0;
+          }
+       }
+
       break;
 /******************************************************************************/
 /*----------------- Load Instructions-----------------------------------------*/
@@ -257,7 +278,7 @@ void perform_access_set_assoc(cache c, unsigned addr, unsigned access_type)
           // Si dirty bit es 1
           if(temp -> dirty){
             // Escribimos en memoria principal su contenido.
-            cache_stat_inst.copies_back += words_per_block;
+              cache_stat_data.copies_back += words_per_block;
           }
       }
         // Leer de memoria principal el dato.
@@ -332,14 +353,15 @@ int cp_flush(cache c){
 
 void flush()
 {
-  int help;
-  if(!cache_split){
-    cache_stat_data.copies_back += cp_flush(c1);
+  if(cache_writeback){
+    int help;
+      if(!cache_split){
+        cache_stat_data.copies_back += cp_flush(c1);
+      }
+      else {
+        cache_stat_data.copies_back += cp_flush(c2);
+      }
   }
-  else {
-    cache_stat_data.copies_back += cp_flush(c2);
-  }
-
 }
 
 
