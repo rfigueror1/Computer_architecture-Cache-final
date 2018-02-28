@@ -1,0 +1,10 @@
+base
+magrittr
+ggplot2
+dplyr
+ggthemes
+purrr
+tidyr
+readr
+stringi
+bindrcpp

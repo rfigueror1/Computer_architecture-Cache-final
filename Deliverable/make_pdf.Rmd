@@ -1,0 +1,742 @@
+---
+title: "Evaluación de desempeño de memoria cache mediante simulación por trazas"
+subtitle: "Arquitectura de Computadoras"
+author: 
+- "Saúl Caballero"
+- "Ricardo Figueroa"
+output: pdf_document
+geometry: margin=.8in
+---
+
+```{r setup, include=FALSE, cache = TRUE}
+library(magrittr)
+library(ggplot2)
+library(dplyr)
+library(ggthemes)
+library(purrr)
+library(tidyr)
+library(readr)
+library(stringi)
+
+knitr::opts_chunk$set(echo = TRUE)
+code_generator <- function(
+  block_size,
+  cache_size,
+  split = FALSE,
+  associativity,
+  write_trough = FALSE,
+  write_no_allocate = FALSE, 
+  file_name
+){
+  if(split == TRUE){
+    size <- paste(" -is ", cache_size, " -ds ", cache_size, sep = "")
+  } else {
+    size <- paste(" -us ", cache_size, sep = "")
+  }
+  if(write_trough){
+    write_through_aux = " -wt "
+  } else{
+    write_through_aux = " "
+  }
+  
+  if(write_no_allocate){
+    write_na_aux = "-nw "
+  } else{
+    write_na_aux = " "
+  }
+  
+  
+  x <- paste(
+    "../Cache/sim -bs ",
+    block_size,
+    size,
+    write_through_aux,
+    write_na_aux,
+    "-a ",
+    associativity,
+    " ../Traces/",
+    file_name,
+    sep = ""
+    )
+  return(x)
+}
+
+files <- list.files(path = "../Traces/") %>% 
+  grep(".*[[:alpha:]]\\.trace", x = ., value = TRUE)
+
+data_generator <- function(
+  block_size,
+  cache_size,
+  split = FALSE,
+  associativity,
+  write_trough = FALSE,
+  write_no_allocate = FALSE, 
+  file_name
+){
+  z <- file_name %>%
+    gsub("(.*)\\.trace", "\\1", .) %>% 
+    paste("./tmp/", . , ".sh", sep = "")
+  code_generator(
+    block_size,
+    cache_size,
+    split = split,
+    associativity,
+    write_trough = write_trough,
+    write_no_allocate = write_no_allocate, 
+    file_name = file_name
+  ) %>% 
+    cat(file = z, sep = "\n")
+  
+  x <- gen_data(
+    block_size,
+    cache_size,
+    split,
+    associativity,
+    write_trough,
+    write_no_allocate
+  )
+  
+  return(x)
+}
+
+x_back <- function(x){
+  for(i in 2:length(x)){
+    if(x[i] == 0){
+      x[i] = x[i - 1]
+    }
+  }
+  return(x)
+}
+
+gen_data <- function(
+  block_size,
+  cache_size,
+  split,
+  associativity,
+  write_trough,
+  write_no_allocate
+){
+    
+  x <- paste(
+    block_size,
+    cache_size,
+    split,
+    associativity,
+    if_else(write_trough, "WT","WB"),
+    if_else(write_no_allocate, "WNA" ,"WA"),
+    sep = ","
+    ) %>% 
+    as_data_frame() %>% 
+    mutate(
+      bs = gsub("(.*),(.*),(.*),(.*),(.*),(.*)","\\1",value) %>% as.numeric,
+      cs = gsub("(.*),(.*),(.*),(.*),(.*),(.*)","\\2",value) %>% as.numeric,
+      split = gsub("(.*),(.*),(.*),(.*),(.*),(.*)","\\3",value),
+      ass = gsub("(.*),(.*),(.*),(.*),(.*),(.*)","\\4",value) %>% as.numeric,
+      write = gsub("(.*),(.*),(.*),(.*),(.*),(.*)","\\5",value),
+      alloc = gsub("(.*),(.*),(.*),(.*),(.*),(.*)","\\6",value)
+    ) %>% 
+    tibble::rownames_to_column() %>% 
+    mutate(config = rowname %>% as.numeric) %>% 
+    select(-value, -rowname)
+}
+
+gather_info <- function(){
+  tmp <- readr::read_lines("./tmp/ayuda.txt") %>% 
+    as_data_frame() %>% 
+    mutate(
+      config = if_else(grepl("CACHE SETTINGS", value), 1, 0) %>% cumsum
+    ) %>% 
+    mutate(
+      thing = gsub("(.*):(.*)","\\1", value),
+      x = gsub("(.*):(.*)","\\2", value),
+      type = if_else(grepl("INSTRUCTIONS", value), 1, 0) + 
+        if_else(grepl("DATA", value), 2, 0) + 
+        if_else(grepl("TRAFFIC", value), 3, 0), 
+      type = x_back(type)
+    ) %>% 
+    filter(!grepl("processed|/*/*/* CACHE", value) &
+             value != "" &
+             !grepl("-cache|Associativity|Block size|policy|INSTRUCTIONS|DATA|TRAFFIC", value)) %>% 
+    select(-value) %>% 
+    spread(thing, x) %>% 
+    mutate(
+      type = case_when(
+        type == 1 ~ "Instructions",
+        type == 2 ~ "Data",
+        type == 3 ~ "Traffic"
+      )
+    )
+  
+  traffic <- tmp %>% 
+    filter(type == "Traffic") %>% 
+    select(config, `  copies back`, `  demand fetch`)
+  other <- tmp %>% 
+    select(-`  copies back`, -`  demand fetch`) %>% 
+    filter(type != "Traffic") %>% 
+    left_join(traffic, by = "config") %>% 
+  rename(miss_rate = `  miss rate`,
+         copies_back = `  copies back`,
+         demand_fetch = `  demand fetch`,
+         accesses=`  accesses`,
+         misses = `  misses`,
+         replace = `  replace`) %>% 
+  mutate(miss_rate = gsub("(.*)\\(.*","\\1", miss_rate)) %>% 
+  mutate_at(
+    .vars = vars(accesses, misses, miss_rate, replace, copies_back, demand_fetch),
+    .funs = funs(as.numeric(.))
+  )
+  return(other)
+}
+
+inc_x <- function(x, num){
+  y <- 0
+  for(i in 2:length(x)){
+    help <- x[i]
+    if(x[i]<x[i-1]){
+      x[i] = x[i] + y
+    }
+    if(help == num){
+      y <- y + num
+    }
+  }
+  return(x)
+}
+```
+
+```{bash make, warning=FALSE, include=FALSE}
+mkdir ./tmp
+make -C ../Cache
+```
+
+
+```{r working_set_characterization, echo = FALSE, cache = TRUE}
+block_size    <- 4
+cache_size    <- 2 ^ seq(2,15)
+associativity <- cache_size / block_size
+split         <- TRUE
+
+df <- map_dfr(
+    as.list(files),
+    ~data_generator(
+      block_size = block_size,
+      cache_size = cache_size,
+      split = TRUE,
+      associativity = associativity,
+      file = .
+    ),
+    .id = "name"
+) %>% 
+  mutate(
+    name = case_when(
+      name == 1 ~ files[1] %>% gsub("(.*)\\.trace", "\\1", .) ,
+      name == 2 ~ files[2] %>% gsub("(.*)\\.trace", "\\1", .) ,
+      name == 3 ~ files[3] %>% gsub("(.*)\\.trace", "\\1", .) 
+    )
+  )
+
+```
+
+```{bash, echo = FALSE, cache = TRUE}
+ls ./tmp/*.sh >> ./tmp/algo.sh
+chmod -R 777 ./tmp/
+./tmp/algo.sh >> ./tmp/ayuda.txt
+rm ./tmp/*.sh
+```
+
+```{r, echo = FALSE, cache = TRUE}
+df1 <- gather_info()  %>% 
+  left_join(
+    df %>% 
+      mutate(config = inc_x(config, length(cache_size))),
+    by = "config"
+  ) %>% 
+  rename(Type = type)
+
+imp_set_charac <- df1 %>% 
+  ggplot(aes(y = 1-miss_rate, x = log2(cs), colour = Type)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~name) + 
+  scale_colour_tableau() +
+  theme_minimal() +
+  labs(x = "log2(Cache Size)", y = "Hit Rate")
+```
+
+```{bash, warning=FALSE, include=FALSE, cache = TRUE}
+rm ./tmp/ayuda.txt
+```
+
+```{r impact_block_size, echo = FALSE, cache=TRUE}
+block_size    <- 2 ^ seq(2,12)
+cache_size    <- 2 ^ 13
+associativity <- 2
+split         <- TRUE
+
+df <- map_df(
+    files,
+    ~data_generator(
+      block_size = block_size,
+      cache_size = cache_size,
+      split = TRUE,
+      associativity = associativity,
+      file = .
+    ),
+    .id = "name"
+) %>% 
+  mutate(
+    name = case_when(
+      name == 1 ~ files[1] %>% gsub("(.*)\\.trace", "\\1", .) ,
+      name == 2 ~ files[2] %>% gsub("(.*)\\.trace", "\\1", .) ,
+      name == 3 ~ files[3] %>% gsub("(.*)\\.trace", "\\1", .) 
+    )
+  )
+
+```
+
+```{bash, echo = FALSE, cache = TRUE}
+ls ./tmp/*.sh >> ./tmp/algo.sh
+chmod -R 777 ./tmp/
+./tmp/algo.sh >> ./tmp/ayuda.txt
+rm ./tmp/*.sh
+```
+
+```{r, echo = FALSE, cache = TRUE}
+df1 <- gather_info()  %>% 
+  full_join(
+    df %>% 
+      mutate(config = inc_x(config, length(block_size))),
+    by = "config"
+  ) %>% 
+  rename(Type = type)
+
+imp_block_size <- df1 %>% 
+  ggplot(aes(y = 1-miss_rate, x = log2(bs), colour = Type)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~name) + 
+  scale_colour_tableau("colorblind10") +
+  theme_minimal() +
+  labs(x = "log2(Block Size)", y = "Hit Rate")
+```
+
+```{bash, warning=FALSE, include=FALSE, cache = TRUE}
+rm ./tmp/ayuda.txt
+```
+
+```{r impact_ass, echo = FALSE, cache = TRUE}
+block_size    <- 2 ^ 7
+cache_size    <- 2 ^ 13
+associativity <- 2 ^ seq(0,6)
+split         <- TRUE
+
+df <- map_df(
+    files,
+    ~data_generator(
+      block_size = block_size,
+      cache_size = cache_size,
+      split = TRUE,
+      associativity = associativity,
+      file = .
+    ),
+    .id = "name"
+) %>% 
+  mutate(
+    name = case_when(
+      name == 1 ~ files[1] %>% gsub("(.*)\\.trace", "\\1", .) ,
+      name == 2 ~ files[2] %>% gsub("(.*)\\.trace", "\\1", .) ,
+      name == 3 ~ files[3] %>% gsub("(.*)\\.trace", "\\1", .) 
+    )
+  )
+
+```
+
+```{bash, echo = FALSE, cache =TRUE}
+ls ./tmp/*.sh >> ./tmp/algo.sh
+chmod -R 777 ./tmp/
+./tmp/algo.sh >> ./tmp/ayuda.txt
+rm ./tmp/*.sh
+```
+
+
+```{r, echo = FALSE, cache =TRUE}
+df1 <- gather_info()  %>% 
+  full_join(
+    df %>% 
+      mutate(config = inc_x(config, length(associativity))),
+    by = "config"
+  ) %>% 
+  rename(Type = type)
+
+imp_ass <- df1 %>% 
+  ggplot(aes(y = 1-miss_rate, x = ass, colour = Type)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~name) + 
+  scale_colour_tableau() +
+  theme_minimal() +
+  labs(x = "log2(Block Size)", y = "Hit Rate")
+```
+
+
+```{bash, warning=FALSE, include=FALSE, cache = TRUE}
+rm ./tmp/ayuda.txt
+```
+
+```{r impact_mem_bandwith, echo = FALSE, cache = TRUE}
+block_size    <- 2 ^ c(6, 6, 6, 6, 7, 7, 7, 7)
+cache_size    <- 2 ^ c(13,14,13,14,13,14,13,14)
+associativity <- 2 ^ c(1, 1, 2, 2, 1, 1, 2, 2)
+split         <- TRUE
+
+df <- map_df(
+    files,
+    ~data_generator(
+      block_size = block_size,
+      cache_size = cache_size,
+      split = TRUE,
+      associativity = associativity,
+      write_no_allocate = TRUE,
+      file = .
+    ),
+    .id = "name"
+) %>% 
+  mutate(
+    name = case_when(
+      name == 1 ~ files[1] %>% gsub("(.*)\\.trace", "\\1", .) ,
+      name == 2 ~ files[2] %>% gsub("(.*)\\.trace", "\\1", .) ,
+      name == 3 ~ files[3] %>% gsub("(.*)\\.trace", "\\1", .) 
+    )
+  )
+```
+
+```{bash, echo = FALSE, cache = TRUE}
+ls ./tmp/*.sh >> ./tmp/algo.sh
+chmod -R 777 ./tmp/
+./tmp/algo.sh >> ./tmp/ayuda.txt
+rm ./tmp/*.sh
+```
+
+```{r, echo = FALSE, cache = TRUE}
+df1 <- gather_info()  %>% 
+  full_join(
+    df %>% 
+      mutate(config = inc_x(config, length(associativity))),
+    by = "config"
+  ) %>% 
+  rename(Type = type)
+
+
+df <- map_df(
+    files,
+    ~data_generator(
+      block_size = block_size,
+      cache_size = cache_size,
+      split = TRUE,
+      associativity = associativity,
+      write_no_allocate = TRUE,
+      write_trough =TRUE,
+      file = .
+    ),
+    .id = "name"
+) %>% 
+  mutate(
+    name = case_when(
+      name == 1 ~ files[1] %>% gsub("(.*)\\.trace", "\\1", .) ,
+      name == 2 ~ files[2] %>% gsub("(.*)\\.trace", "\\1", .) ,
+      name == 3 ~ files[3] %>% gsub("(.*)\\.trace", "\\1", .) 
+    )
+  )
+```
+
+```{bash, echo = FALSE, cache = TRUE}
+rm ./tmp/ayuda.txt
+ls ./tmp/*.sh >> ./tmp/algo.sh
+chmod -R 777 ./tmp/
+./tmp/algo.sh >> ./tmp/ayuda.txt
+rm ./tmp/*.sh
+```
+
+```{r, cache = TRUE, echo =FALSE}
+df2 <- gather_info()  %>% 
+  full_join(
+    df %>% 
+      mutate(config = inc_x(config, length(associativity))),
+    by = "config"
+  ) %>% 
+  rename(Type = type) %>% 
+  full_join(df1, by = c("config", "Type", "accesses", "misses", "miss_rate", "replace", "copies_back", "demand_fetch", "name", "bs", "cs", "split", "ass", "write", "alloc"))
+```
+
+```{r, cache = TRUE, echo = FALSE}
+df <- map_df(
+    files,
+    ~data_generator(
+      block_size = block_size,
+      cache_size = cache_size,
+      split = TRUE,
+      associativity = associativity,
+      file = .
+    ),
+    .id = "name"
+) %>% 
+  mutate(
+    name = case_when(
+      name == 1 ~ files[1] %>% gsub("(.*)\\.trace", "\\1", .) ,
+      name == 2 ~ files[2] %>% gsub("(.*)\\.trace", "\\1", .) ,
+      name == 3 ~ files[3] %>% gsub("(.*)\\.trace", "\\1", .) 
+    )
+  )
+```
+
+```{bash, echo = FALSE, cache = TRUE}
+rm ./tmp/ayuda.txt
+ls ./tmp/*.sh >> ./tmp/algo.sh
+chmod -R 777 ./tmp/
+./tmp/algo.sh >> ./tmp/ayuda.txt
+rm ./tmp/*.sh
+```
+
+```{r, cache=TRUE, echo = FALSE}
+mem_ban_df <- gather_info()  %>% 
+  full_join(
+    df %>% 
+      mutate(config = inc_x(config, length(associativity))),
+    by = "config"
+  ) %>% 
+  rename(Type = type) %>% 
+  full_join(df2, by = c("config", "Type", "accesses", "misses", "miss_rate", "replace", "copies_back", "demand_fetch", "name", "bs", "cs", "split", "ass", "write", "alloc"))
+```
+
+# Introducción
+
+En esta práctica se realiza un simulador de cache que permite el uso de distintos parámetros en términos de tamaño de cache, asociatividad, tamaño de bloque, uso de caches separados para datos e instrucciones (I-D) y políticas de escritura (write-back o write-through y write-allocate o no write-allocate).  La política de reemplazo utilizada en caso de tener una asociatividad mayor a uno es Last Recently Used. Los resultados obtenidos muestran que el simulador funciona y son similares a lo que se espera de una memoria cache.
+
+# Marco Teórico
+
+A continuación se explican los parámetros que el revisor de este documento debe conocer y que impactan en el desempeño de una memoria cache y su costo:
+
+El tamaño de una memoria cache influye directamente en el hit rate debido a que se puede guardar un mayor número de localidades de memoria principal, sin embargo tamién incrementa el hit time. La asociatividad también ayuda en el hit rate, sin embargo es costosa en términos de recursos en las búsquedas. El tamaño de bloque reduce el miss rate hasta cierto punto afectado por el principio de localidad. Las combinaciones más comunes en términos de política de escritura son write-back y write-allocate y write-through con write no allocate. 
+
+Durante un hit en un acceso de escritura, la política write-back escribe únicamente en cache y marca como dirty para posteriormente ser escrita en memoria principal durante un reemplazo. La politica write-through escribe directamente en memoria principal y en cache, esto implica mayor tráfico y ancho de banda en memorio pero su diseño es más sencillo y la consistencia con la memoria principal en permanente.
+
+Durante un miss en un acceso de escritura, la política write-allocate trae el bloque completo a cache y modifica únicamente en cache, mientras que el no-write-allocate solo escribe en memoria. 
+
+# Evaluación de desempeño
+
+A continuación se evaluará el desempeño de las propiedades que puede tener un Caché.
+
+## Tamaño de Cache
+
+```{r, cache = TRUE, echo = FALSE}
+files <- list.files(path = "../Traces/") %>% 
+  grep(".*[[:alpha:]]\\.trace", x = ., value = TRUE)
+
+info <- map_df(
+  paste("../Traces/",files, sep = ""),
+  ~read_lines(.) %>% 
+  as_data_frame() %>% 
+  mutate(
+    inst = gsub("([[:digit:]])[[:space:]](.*)", "\\1", value) %>% 
+      as.numeric,
+    inst = if_else(inst == 2, "Instrucción", "Dato"),
+    value = gsub("([[:digit:]])[[:space:]](.*)", "\\2", value)
+    ) %>% 
+  group_by(inst) %>% 
+  summarise(n()),
+  .id = "Archivo"
+) %>% 
+  mutate(
+    Archivo = case_when(
+      Archivo == 1 ~ files[1] %>% gsub("(.*)\\.trace", "\\1", .) ,
+      Archivo == 2 ~ files[2] %>% gsub("(.*)\\.trace", "\\1", .) ,
+      Archivo == 3 ~ files[3] %>% gsub("(.*)\\.trace", "\\1", .) 
+    )
+  ) %>% 
+  rename(Tipo = inst, Localidades = `n()`)
+```
+
+El experimento consiste en evaluar el desempeño con distintos tamaños de caché. Se usa un caché con memoria separada, tamaño de bloque de $4$ bytes, política **write-back** y **write-allocate**, y para evitar que en el análisis exista un impacto de misses por conflicto, se usa una caché que es totalmente asociativa. Los tamaños de caché van desde $2^2$ hasta $2^{13}$ bytes.
+
+```{r, echo = FALSE, fig.align='center', fig.height=3}
+
+imp_set_charac +
+  ggplot2::labs(
+    x = expression(paste(log[2],"(Tamaño de Caché)")),
+    y = "Tasa de Hits"
+  )
+
+```
+
+Se puede observar que el impacto del tamaño de caché tiene una relación no decreciente con la tasa de hits, sin embargo, a partir de un cierto tamaño, ya no tiene impacto sobre la tasa de hits.
+
+En la siguiente tabla se puede observar las localidades totales usadas por las trazas para datos e instrucciones:
+
+```{r, echo = FALSE}
+knitr::kable(info, format.args = list(big.mark = ','))
+```
+
+## Tamaño del Bloque
+
+En este experimento, se juega con el tamaño del bloque el cual va desde $2^2$ bytes hasta $2^{12}$ bytes. Se usa un caché con memoria separada cada una de $8$ Kbytes, asociatividad de $2$ y política **write-back** y **write-allocate**. A continuación se muestran el impacto del tamaño del bloque en la tasa de hits:
+
+```{r, echo = FALSE, fig.align = 'center', fig.height=3}
+
+imp_block_size +
+  ggplot2::labs(
+    x = expression(paste(log[2],"(Tamaño de bloque)")),
+    y = "Tasa de hits"
+  ) +
+  ggplot2::scale_x_continuous(breaks = seq(2,14, by  = 2))
+```
+
+Se puede observar que la relación del tamaño de bloque con la tasa de hits tiene una función concava, por lo que podemos decir que existe un tamaño óptimo de tamaño de bloque, dependiendo de la traza usada. Esta forma se puede explicar de la siguiente forma: 
+
+* Parte creciente: el principio de localidad nos dice que localidades cercanas se van a usar de forma muy seguida, por lo que entre más cercanas las localidades mayor probabilidad de que sean usadas. Por lo tanto cuando aumenta el tamaño de bloque aumenta la tasa de hits.
+* Parte decreciente: cuando el tamaño de bloque es demasiado grande, estamos metiendo localidades al caché que es probable que no vayamos a usar en un futuro cercano, por lo que la tasa de hits comienza a disminuir.
+
+El tamaño óptimo de bloque para las trazas es el siguiente: 
+
+```{r, echo = FALSE}
+library(magrittr)
+tibble::data_frame(
+  Traza = c("cc", "cc", "spice", "spice", "tex", "tex"),
+  Tipo = rep(c("Datos", "Instrucciones"), 3),
+  `Tamaño Óptimo` = c("32", "2048","32","1024", "128","4-2048")
+) %>% knitr::kable()
+```
+
+## Asociatividad
+
+En este experimento, se juega con la asociatividad del caché la cual va desde $1$ bytes hasta $64$ bytes. Se usa un caché con memoria separada cada una de $8$ Kbytes, tamaño de bloque de $128$ bytes y política **write-back** y **write-allocate**. A continuación se muestran el impacto de la asociatividad en la tasa de hits:
+
+```{r echo =FALSE, fig.align='center', fig.height=3}
+imp_ass +
+  ggplot2::labs(
+    x = "Asociatividad",
+    y = "Tasa de hits"
+  )
+```
+
+Se observa que al aumentar la asociatividad se encuentra una relación no decreciente con la tasa de hits; sin embargo, llega un punto donde la asociatividad ya no ayuda mucho. Además al aumentar la asociatividad, se vuelve muy costosa la búsqueda.
+
+También se puede apreciar que la tasa de hits de las instrucciones es mayor que la de los datos, excepto en la traza de *spice*. Además se observa que la diferencia entre datos e instrucciones se queda estable a partir de un cierto punto.
+
+\pagebreak
+
+## Ancho de Banda en Memoria
+
+En este experimento, se ve que ocurre con el ancho de banda en memoria. Se usa un caché con memoria separada cada una de $8$ Kbytes o $16$ Kbytes, tamaño de bloque de $64$ y $128$ bytes, asociatividad $2$ y $4$, y política  **write-no-allocate**. Se usa la suma de copies back y demand fetch como media de ancho de banda en memoria.
+
+### Comparación write-through contra write-back
+
+```{r,  echo = FALSE,fig.width=7, fig.align = 'center', message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(ggthemes)
+a <- mem_ban_df %>% 
+  mutate(banwidth = copies_back + demand_fetch) %>% 
+  filter(alloc =="WNA") %>% 
+  filter(cs == 16384) %>% 
+  mutate(
+    bs = paste("Tamaño del bloque: \n", bs, sep = ""),
+    Asociatividad = factor(ass)
+  ) %>% 
+  ggplot(aes(y = banwidth, x = write, fill = Asociatividad)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(bs~name) +
+  scale_colour_tableau("colorblind10") +
+  theme_minimal() +
+  labs(
+    x = "",
+    y = "Palabras",
+    title = "Tamaño de caché: 16 Kbytes"
+  ) + theme(legend.position="top") +
+  theme(strip.text.x = element_text(size = 5.8))
+
+b <- mem_ban_df %>% 
+  mutate(banwidth = copies_back + demand_fetch) %>% 
+  filter(alloc =="WNA") %>% 
+  filter(cs == 8192) %>% 
+  mutate(
+    bs = paste("Tamaño del bloque: \n", bs, sep = ""),
+    Asociatividad = factor(ass)
+  ) %>% 
+  ggplot(aes(y = banwidth, x = write, fill = Asociatividad)) +
+  geom_bar(stat = "identity") +
+  scale_colour_tableau("colorblind10") +
+  theme_minimal() +
+  facet_wrap(bs~name) +
+  labs(
+    x = "",
+    y = "",
+    title = "Tamaño de caché: 8 Kbytes"
+  ) + theme(legend.position="top") +
+  theme(strip.text.x = element_text(size = 5.8))
+gridExtra::grid.arrange(a,b, ncol = 2)
+
+```
+
+Se puede observar que la política **write-through** es la que tiene le tránsito de palabras más alta independientemente de los casos analizados. La explicación es sencilla, pues en este caso siempre que hace un proceso guarda directamente en memoria por lo que los copies back aumentan. Esta respuesta puede ser con programas donde la mayoría de operaciones fueran de escritura en lugar de lectura.
+
+### Comparación write-allocate contra write-no-allocate
+
+```{r, echo = FALSE,fig.width=7, fig.align = 'center'}
+library(dplyr)
+library(ggplot2)
+library(ggthemes)
+a <- mem_ban_df %>% 
+  mutate(banwidth = copies_back + demand_fetch) %>% 
+  filter(write =="WB") %>% 
+  filter(cs == 16384) %>% 
+  mutate(
+    bs = paste("Tamaño del bloque: \n", bs, sep = ""),
+    Asociatividad = factor(ass)
+  ) %>% 
+  ggplot(aes(y = banwidth, x = alloc, fill = Asociatividad)) +
+  geom_bar(stat = "identity") +
+  scale_colour_tableau("colorblind10") +
+  theme_minimal() +
+  facet_wrap(bs~name, scales = "free_y") +
+  labs(
+    x = "",
+    y = "Palabras",
+    title = "Tamaño de caché: 16 Kbytes"
+  ) + theme(legend.position="top") +
+  theme(strip.text.x = element_text(size = 5.8))
+
+b <- mem_ban_df %>% 
+  mutate(banwidth = copies_back + demand_fetch) %>% 
+  filter(write =="WB") %>% 
+  filter(cs == 8192) %>% 
+  mutate(
+    bs = paste("Tamaño del bloque: \n", bs, sep = ""),
+    Asociatividad = factor(ass)
+  ) %>% 
+  ggplot(aes(y = banwidth, x = alloc, fill = Asociatividad)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(bs~name, scales = "free_y") +
+  scale_colour_tableau("colorblind10") +
+  theme_minimal() +
+  labs(
+    x = "",
+    y = "",
+    title = "Tamaño de caché: 8 Kbytes"
+  ) +
+  theme(legend.position="top") +
+  theme(strip.text.x = element_text(size = 5.8))
+
+gridExtra::grid.arrange(a,b, ncol = 2)
+```
+
+En este caso no se puede observar un patrón claro de cuál tiene menor tránsito. e puede esperar una mayor cantidad de demand fetches en el caso de **write-allocate** porque en los misses se escribe todo un bloque y en **write-no-allocate** solo escribe una palabra. La volatilidad viene de la política de **writes-back**.
+
+# Conclusión
+
+El aprendizaje derivado de la práctica fue muy valioso y ayudo a los autores a entender con profundidad el funcionamiento de una memoria cache y el impacto que tiene los distintos parámetros. Consideramos que la implementación también fue exitosa en términos de desarrollo de habilidades generales de computación (programación en C).
+
+```{bash, include=FALSE}
+make clean -C ../Cache
+rm -rf ./tmp
+```
+
+
