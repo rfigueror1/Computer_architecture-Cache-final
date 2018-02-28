@@ -638,7 +638,7 @@ a <- mem_ban_df %>%
   filter(alloc =="WNA") %>% 
   filter(cs == 16384) %>% 
   mutate(
-    bs = paste("Tamaño del bloque: \n", bs, sep = ""),
+    bs = paste("Bloque: \n", bs, " Bytes", sep = ""),
     Asociatividad = factor(ass)
   ) %>% 
   ggplot(aes(y = banwidth, x = write, fill = Asociatividad)) +
@@ -651,14 +651,14 @@ a <- mem_ban_df %>%
     y = "Palabras",
     title = "Tamaño de caché: 16 Kbytes"
   ) + theme(legend.position="top") +
-  theme(strip.text.x = element_text(size = 5.8))
+  theme(strip.text.x = element_text(size = 5.7))
 
 b <- mem_ban_df %>% 
   mutate(banwidth = copies_back + demand_fetch) %>% 
   filter(alloc =="WNA") %>% 
   filter(cs == 8192) %>% 
   mutate(
-    bs = paste("Tamaño del bloque: \n", bs, sep = ""),
+    bs = paste("Bloque: \n", bs, " Bytes", sep = ""),
     Asociatividad = factor(ass)
   ) %>% 
   ggplot(aes(y = banwidth, x = write, fill = Asociatividad)) +
@@ -671,7 +671,7 @@ b <- mem_ban_df %>%
     y = "",
     title = "Tamaño de caché: 8 Kbytes"
   ) + theme(legend.position="top") +
-  theme(strip.text.x = element_text(size = 5.8))
+  theme(strip.text.x = element_text(size = 5.7))
 gridExtra::grid.arrange(a,b, ncol = 2)
 
 ```
@@ -689,7 +689,7 @@ a <- mem_ban_df %>%
   filter(write =="WB") %>% 
   filter(cs == 16384) %>% 
   mutate(
-    bs = paste("Tamaño del bloque: \n", bs, sep = ""),
+    bs = paste("Bloque: \n", bs, " Bytes", sep = ""),
     Asociatividad = factor(ass)
   ) %>% 
   ggplot(aes(y = banwidth, x = alloc, fill = Asociatividad)) +
@@ -702,14 +702,14 @@ a <- mem_ban_df %>%
     y = "Palabras",
     title = "Tamaño de caché: 16 Kbytes"
   ) + theme(legend.position="top") +
-  theme(strip.text.x = element_text(size = 5.8))
+  theme(strip.text.x = element_text(size = 5.7))
 
 b <- mem_ban_df %>% 
   mutate(banwidth = copies_back + demand_fetch) %>% 
   filter(write =="WB") %>% 
   filter(cs == 8192) %>% 
   mutate(
-    bs = paste("Tamaño del bloque: \n", bs, sep = ""),
+    bs = paste("Bloque: \n", bs, " Bytes", sep = ""),
     Asociatividad = factor(ass)
   ) %>% 
   ggplot(aes(y = banwidth, x = alloc, fill = Asociatividad)) +
@@ -723,7 +723,7 @@ b <- mem_ban_df %>%
     title = "Tamaño de caché: 8 Kbytes"
   ) +
   theme(legend.position="top") +
-  theme(strip.text.x = element_text(size = 5.8))
+  theme(strip.text.x = element_text(size = 5.7))
 
 gridExtra::grid.arrange(a,b, ncol = 2)
 ```
